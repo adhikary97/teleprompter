@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Teleprompter — Editor Left, Prompter Right</title>
+<style>
+  :root{
+    --bg:#0b0e11;
+    --panel:#12161b;
+    --muted:#8aa0b8;
+    --accent:#5cc8ff;
+    --text:#e9f1fb;
+    --danger:#ff6b6b;
+    --ok:#2ecc71;
+    --border:#1f2833;
+    --topGap: 25vh; /* space at top of prompter canvas */
+    --guideTop: 50%; /* overridden in JS with exact px */
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  }
+
+  .app{
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap:12px;
+    height:100vh;
+    padding:12px;
+  }
+  @media (max-width: 1100px){
+    .app{grid-template-columns: 1fr; grid-auto-rows: minmax(0,1fr)}
+  }
+
+  /* Editor */
+  .editor{
+    display:flex; flex-direction:column; min-height:0;
+    background:var(--panel); border:1px solid var(--border); border-radius:14px; overflow:hidden;
+  }
+  .toolbar{
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:10px;
+    border-bottom:1px solid var(--border); background:linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
+  }
+  .toolbar label{
+    font-size:12px; color:var(--muted); display:flex; align-items:center; gap:8px; white-space:nowrap;
+  }
+  .toolbar input[type="range"]{width:140px}
+  .toolbar input[type="number"]{
+    width:80px; background:#0f1317; border:1px solid var(--border); color:var(--text);
+    padding:6px 8px; border-radius:8px;
+  }
+  .toolbar .sep{width:1px; height:28px; background:var(--border); margin:0 2px;}
+  .toolbar .metrics{margin-left:auto; display:flex; gap:14px; align-items:center; font-size:12px; color:var(--muted)}
+
+  .controls button, .toolbar button, .footer-btn{
+    background:#0f1317; border:1px solid var(--border); color:var(--text);
+    padding:8px 12px; border-radius:10px; cursor:pointer;
+    transition:transform .04s ease, border-color .2s ease, background .2s ease;
+  }
+  .controls button:hover, .toolbar button:hover, .footer-btn:hover{border-color:#334455}
+  .controls button:active, .toolbar button:active, .footer-btn:active{transform:scale(0.98)}
+  .btn-primary{background:linear-gradient(180deg, #0f2a38, #0d1f2b); border-color:#214559}
+  .btn-danger{border-color:#5b2222; background:linear-gradient(180deg, #2d0c0c, #1b0a0a); color:#ffd6d6}
+  .btn-ok{border-color:#215b3a; background:linear-gradient(180deg, #0f2a1d, #0c1b13); color:#d7ffe7}
+
+  textarea{
+    flex:1; width:100%; background:#0b0f13; color:#e9f1fb;
+    border:0; outline:none; resize:none; font-size:18px; line-height:1.6; padding:14px 16px;
+  }
+  .editor-footer{display:flex; gap:10px; padding:10px; border-top:1px solid var(--border); background:rgba(255,255,255,0.02)}
+
+  /* Prompter */
+  .prompter{
+    position:relative; min-height:0; display:flex; flex-direction:column;
+    background:#000; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+  }
+  .stage{position:relative; flex:1; overflow:hidden; background: radial-gradient(1200px 800px at 50% 120%, rgba(92,200,255,0.03), transparent), #000;}
+  .scroll-viewport{position:absolute; inset:0; overflow:hidden;}
+  .scroll-content{
+    position:absolute; left:0; right:0; top:0;
+    padding: var(--topGap) 48px 120px;
+    font-size:64px; line-height:1.3; letter-spacing:0.2px; color:#f6fbff; text-rendering:optimizeLegibility;
+    transform: translateY(0); will-change: transform;
+  }
+  .mirrored{transform: translateY(var(--ty,0)) scaleX(-1)}
+  .not-mirrored{transform: translateY(var(--ty,0))}
+
+  /* Spacer block above the text to create physical gap under the guideline */
+  .spacer{height:0}
+
+  /* Script lines (no highlight styles) */
+  .line{padding: 4px 12px; border-radius: 10px; contain: layout style;}
+  .line.blank{opacity: 0.85;}
+
+  /* Guide: positioned via --guideTop in px */
+  .center-guide{
+    position:absolute; left:0; right:0; top:var(--guideTop);
+    height:0; border-top:2px dashed rgba(92,200,255,0.55); pointer-events:none;
+  }
+  .center-guide.hidden{display:none}
+
+  .hud{position:absolute; right:10px; top:10px; display:flex; gap:8px; z-index:5}
+  .hud .chip{font-size:12px; color:#cfe9ff; background:rgba(31,49,66,.6); border:1px solid rgba(66,105,140,.6); border-radius:999px; padding:6px 10px; backdrop-filter: blur(4px);}
+
+  .countdown{
+    position:absolute; inset:0; display:none; place-items:center; background:rgba(0,0,0,0.6); z-index:10;
+    font-weight:700; font-size:22vw; line-height:1; color:#fff; text-shadow:0 8px 40px rgba(0,0,0,0.7);
+  }
+  .countdown.show{display:grid; animation: fadeBg 0.3s ease}
+  @keyframes fadeBg{from{background:rgba(0,0,0,0.9)} to{background:rgba(0,0,0,0.6)}}
+
+  .prompter-controls{display:flex; gap:10px; align-items:center; padding:10px; border-top:1px solid var(--border); background:linear-gradient(180deg, rgba(255,255,255,0.03), transparent)}
+  .prompter-controls .label{font-size:12px; color:var(--muted)}
+  .grow{flex:1}
+  .kbd{
+    font: 500 11px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    background:#111820; border:1px solid #263241; border-bottom-width:2px; padding:2px 6px; border-radius:6px; color:#cae8ff; margin-left:6px;
+  }
+
+  .toggle{display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none}
+  .toggle input{appearance:none; width:38px; height:22px; position:relative; border-radius:999px; background:#2b3643; outline:none; border:1px solid #3a4b5e; transition:all .2s}
+  .toggle input:after{content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; background:white; border-radius:50%; transition:all .2s}
+  .toggle input:checked{background:#224f65; border-color:#2b7aa0}
+  .toggle input:checked:after{left:18px}
+
+  .hint{font-size:12px; color:var(--muted)}
+  .link{color:var(--accent); text-decoration:none}
+  .link:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+  <div class="app">
+    <!-- Left: Editor -->
+    <section class="editor" aria-label="Teleprompter Script Editor">
+      <div class="toolbar">
+        <button id="playToggleEditor" class="btn-primary">▶ Play</button>
+
+        <label>Speed
+          <input id="speed" type="range" min="0" max="400" step="1" value="90" />
+          <input id="speedNum" type="number" min="0" max="600" step="1" value="90" />
+          <span class="hint">px/s</span>
+        </label>
+        <label>Font
+          <input id="font" type="range" min="24" max="120" step="1" value="64" />
+          <input id="fontNum" type="number" min="24" max="160" step="1" value="64" />
+          <span class="hint">px</span>
+        </label>
+        <label>Line
+          <input id="line" type="range" min="1.0" max="2.0" step="0.05" value="1.30" />
+          <input id="lineNum" type="number" min="1.0" max="2.0" step="0.05" value="1.30" />
+        </label>
+
+        <!-- Lead control (× line height) -->
+        <label>Lead
+          <input id="lead" type="range" min="0" max="1.5" step="0.05" value="0.65" />
+          <input id="leadNum" type="number" min="0" max="2.0" step="0.05" value="0.65" />
+          <span class="hint">× line</span>
+        </label>
+
+        <span class="sep"></span>
+        <label class="toggle"><input id="mirror" type="checkbox" />Mirror</label>
+        <label class="toggle"><input id="countdownToggle" type="checkbox" checked />Countdown</label>
+        <label class="toggle"><input id="guideToggle" type="checkbox" checked />Guide line</label>
+        <span class="metrics">
+          <span id="wpm">≈ 0 WPM</span>
+          <span id="eta">ETA —</span>
+        </span>
+      </div>
+
+      <textarea id="editor" spellcheck="false" aria-label="Script text (autosaves)">
+Welcome! 👋
+
+This is your in-browser teleprompter.
+
+• Type or paste your script here (left).  
+• Click ▶ Play — the right panel scrolls automatically.  
+• Adjust speed, font, line-height, mirror mode, guide line, and lead distance.
+
+Tips:
+- Space = Play/Pause
+- ↑ / ↓ = Speed ±5 px/s
+- ← / → = Font −/+
+- M = Mirror
+- F = Fullscreen (prompter)
+- R = Reset to top
+- G = Toggle guide line
+- C = Toggle countdown
+
+Break your lines thoughtfully and use blank lines for natural pauses.
+Have a great take!
+      </textarea>
+
+      <div class="editor-footer">
+        <button id="reset" class="">⟲ Reset</button>
+        <button id="exportBtn" class="">⤓ Export .txt</button>
+        <input id="importFile" type="file" accept=".txt,.md,.rtf,.text" hidden />
+        <button id="importBtn" class="">⤒ Import</button>
+        <button id="clearBtn" class="btn-danger">🗑 Clear</button>
+        <span class="hint" style="margin-left:auto">Autosaved locally</span>
+      </div>
+    </section>
+
+    <!-- Right: Prompter -->
+    <section class="prompter" aria-label="Teleprompter Display">
+      <div class="hud">
+        <span class="chip">Space: Play/Pause</span>
+        <span class="chip">F: Fullscreen</span>
+        <span class="chip">M: Mirror</span>
+      </div>
+      <div id="countdown" class="countdown">3</div>
+      <div id="stage" class="stage">
+        <div id="guide" class="center-guide"></div>
+        <div class="scroll-viewport" id="viewport" aria-live="polite">
+          <div id="content" class="scroll-content not-mirrored"></div>
+        </div>
+      </div>
+      <div class="prompter-controls">
+        <div class="controls" style="display:flex; gap:8px; flex-wrap:wrap">
+          <button id="playToggle" class="btn-primary">▶ Play</button>
+          <button id="reset2">⟲ Reset</button>
+          <button id="fullscreen">⛶ Fullscreen</button>
+          <button id="snapToGuide" class="btn-ok">↧ Snap to guide</button>
+        </div>
+        <div class="grow"></div>
+        <div class="label">Speed <span id="speedLabel" class="kbd">90 px/s</span></div>
+      </div>
+    </section>
+  </div>
+
+<script>
+(function(){
+  const els = {
+    editor: document.getElementById('editor'),
+    content: document.getElementById('content'),
+    viewport: document.getElementById('viewport'),
+    stage: document.getElementById('stage'),
+    guide: document.getElementById('guide'),
+    countdown: document.getElementById('countdown'),
+    speed: document.getElementById('speed'),
+    speedNum: document.getElementById('speedNum'),
+    font: document.getElementById('font'),
+    fontNum: document.getElementById('fontNum'),
+    line: document.getElementById('line'),
+    lineNum: document.getElementById('lineNum'),
+    lead: document.getElementById('lead'),
+    leadNum: document.getElementById('leadNum'),
+    mirror: document.getElementById('mirror'),
+    guideToggle: document.getElementById('guideToggle'),
+    countdownToggle: document.getElementById('countdownToggle'),
+    playToggle: document.getElementById('playToggle'),
+    playToggleEditor: document.getElementById('playToggleEditor'),
+    reset: document.getElementById('reset'),
+    reset2: document.getElementById('reset2'),
+    fullscreen: document.getElementById('fullscreen'),
+    snapToGuide: document.getElementById('snapToGuide'),
+    exportBtn: document.getElementById('exportBtn'),
+    importBtn: document.getElementById('importBtn'),
+    importFile: document.getElementById('importFile'),
+    clearBtn: document.getElementById('clearBtn'),
+    wpm: document.getElementById('wpm'),
+    eta: document.getElementById('eta'),
+    speedLabel: document.getElementById('speedLabel'),
+  };
+
+  // Lead: physical spacer (× line height) between guideline and first line
+  const DEFAULT_LEAD_FACTOR = 0.65;
+
+  let state = {
+    running:false,
+    mirror:false,
+    speed: Number(els.speed.value),
+    fontSize: Number(els.font.value),
+    lineHeight: Number(els.line.value),
+    leadFactor: Number(els.lead.value || DEFAULT_LEAD_FACTOR), // × line height
+    offset: 0,          // animated scroll offset (px)
+    lastTs: 0,
+    raf: null,
+    countdownOn: true,
+    spacerEl: null,     // the physical gap element
+    lines: [],
+    lineCenters: [],    // center Y (relative to content) for every line
+    nonBlankIdxs: [],   // indexes of non-blank lines
+    guideTopPx: 0,      // guide position inside viewport (px from top)
+    maxOffset: 0,       // max scroll so last line center hits guide at the end
+  };
+
+  const LS_KEY = 'teleprompter_script_v1';
+  const LS_PREF = 'teleprompter_prefs_v1';
+  try {
+    const saved = localStorage.getItem(LS_KEY);
+    if (saved) els.editor.value = saved;
+    const prefs = JSON.parse(localStorage.getItem(LS_PREF) || '{}');
+    if (prefs.speed) { els.speed.value = prefs.speed; els.speedNum.value = prefs.speed; state.speed = Number(prefs.speed); }
+    if (prefs.font)  { els.font.value = prefs.font; els.fontNum.value = prefs.font; state.fontSize = Number(prefs.font); }
+    if (prefs.line)  { els.line.value = prefs.line; els.lineNum.value = prefs.line; state.lineHeight = Number(prefs.line); }
+    if (typeof prefs.mirror === 'boolean') { els.mirror.checked = prefs.mirror; state.mirror = prefs.mirror; }
+    if (typeof prefs.countdownOn === 'boolean') { els.countdownToggle.checked = prefs.countdownOn; state.countdownOn = prefs.countdownOn; }
+    if (typeof prefs.guide === 'boolean') { els.guideToggle.checked = prefs.guide = prefs.guide; }
+    if (typeof prefs.leadFactor === 'number') {
+      state.leadFactor = prefs.leadFactor;
+      els.lead.value = String(prefs.leadFactor);
+      els.leadNum.value = String(prefs.leadFactor);
+    } else {
+      els.lead.value = String(DEFAULT_LEAD_FACTOR);
+      els.leadNum.value = String(DEFAULT_LEAD_FACTOR);
+    }
+  } catch(e){}
+
+  /* ---------- Utilities ---------- */
+  const clamp = (n,min,max)=> Math.max(min, Math.min(max, n));
+  const isBlankEl = (el)=> el.classList.contains('blank');
+
+  function applyTypography(){
+    els.content.style.fontSize = state.fontSize + 'px';
+    els.content.style.lineHeight = state.lineHeight;
+  }
+  function applyMirror(){
+    els.content.classList.toggle('mirrored', state.mirror);
+    els.content.classList.toggle('not-mirrored', !state.mirror);
+  }
+  function updateSpeedLabel(){ els.speedLabel.textContent = `${state.speed} px/s`; }
+  function syncInputs(){
+    els.speed.value = String(state.speed); els.speedNum.value = String(state.speed);
+    els.font.value  = String(state.fontSize); els.fontNum.value = String(state.fontSize);
+    els.line.value  = String(state.lineHeight); els.lineNum.value = String(state.lineHeight);
+    els.lead.value  = String(state.leadFactor); els.leadNum.value = String(state.leadFactor);
+    updateSpeedLabel();
+  }
+  function setPlayButtons(running){
+    const label = running ? '⏸ Pause' : '▶ Play';
+    els.playToggle.textContent = label;
+    els.playToggleEditor.textContent = label;
+    els.playToggle.classList.toggle('btn-primary', !running);
+    els.playToggleEditor.classList.toggle('btn-primary', !running);
+  }
+
+  /* ---------- Guide + Centers + Limits ---------- */
+  function recomputeGuideTop(){
+    // Guide passes through where the first line center would be w/o spacer:
+    const cs = getComputedStyle(els.content);
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const lineH  = parseFloat(cs.lineHeight) || (state.fontSize * state.lineHeight);
+    state.guideTopPx = padTop + (lineH / 2);
+    els.stage.style.setProperty('--guideTop', state.guideTopPx + 'px');
+    els.guide.style.top = state.guideTopPx + 'px';
+  }
+
+  function recomputeLineCenters(){
+    state.lineCenters = new Array(state.lines.length);
+    state.nonBlankIdxs = [];
+    for (let i=0; i<state.lines.length; i++){
+      const el = state.lines[i];
+      const center = el.offsetTop + el.offsetHeight/2; // relative to content
+      state.lineCenters[i] = center;
+      if (!isBlankEl(el)) state.nonBlankIdxs.push(i);
+    }
+  }
+
+  function recomputeMaxOffset(){
+    // Align last non-blank line center with guide at the end.
+    let lastIdx = state.nonBlankIdxs.length ? state.nonBlankIdxs[state.nonBlankIdxs.length-1] : -1;
+    if (lastIdx < 0) { state.maxOffset = 0; return; }
+    const lastCenter = state.lineCenters[lastIdx];
+    state.maxOffset = Math.max(0, lastCenter - state.guideTopPx);
+  }
+
+  function updateSpacerHeight(){
+    const lineH  = parseFloat(getComputedStyle(els.content).lineHeight) || (state.fontSize * state.lineHeight);
+    const spacerPx = Math.max(0, lineH * state.leadFactor);
+    if (state.spacerEl) state.spacerEl.style.height = spacerPx + 'px';
+  }
+
+  /* ---------- Layout + Render ---------- */
+  function renderScript(){
+    const raw = els.editor.value.replace(/\r\n/g, '\n');
+    const lines = raw.split('\n');
+
+    els.content.innerHTML = '';
+    state.lines = [];
+
+    // Physical spacer block before any text
+    const spacer = document.createElement('div');
+    spacer.className = 'spacer';
+    els.content.appendChild(spacer);
+    state.spacerEl = spacer;
+
+    // Script lines
+    for (let i=0;i<lines.length;i++){
+      const div = document.createElement('div');
+      const isBlank = lines[i].trim()==='';
+      div.className = 'line' + (isBlank ? ' blank':'');
+      div.textContent = isBlank ? ' ' : lines[i];
+      els.content.appendChild(div);
+      state.lines.push(div);
+    }
+
+    // Reset geometry
+    setOffset(0);
+    recomputeGuideTop();
+    updateSpacerHeight();
+    // After spacer size applied, compute centers and end-stop
+    // Use rAF to ensure layout has applied before measuring
+    requestAnimationFrame(()=>{
+      recomputeLineCenters();
+      recomputeMaxOffset();
+      computeAndDisplayMetrics();
+    });
+  }
+
+  function setOffset(px){
+    state.offset = clamp(px, 0, state.maxOffset);
+    els.content.style.setProperty('--ty', `-${state.offset}px`);
+  }
+
+  function computeAndDisplayMetrics(){
+    const wordCount = els.editor.value.trim().split(/\s+/).filter(Boolean).length;
+    const distance = Math.max(0, state.maxOffset); // total travel
+    const seconds = state.speed > 0 ? (distance / state.speed) : 0;
+    const wpm = seconds > 0 ? Math.round(wordCount / (seconds/60)) : 0;
+    els.wpm.textContent = `≈ ${wpm} WPM`;
+    els.eta.textContent = seconds > 0 ? `ETA ${Math.floor(seconds/60)}:${String(Math.round(seconds%60)).padStart(2,'0')}` : 'ETA —';
+  }
+
+  /* ---------- Animation ---------- */
+  function tick(ts){
+    if (!state.running){ state.raf = null; return; }
+    if (!state.lastTs) state.lastTs = ts;
+    const dt = Math.min(0.05, (ts - state.lastTs)/1000);
+    state.lastTs = ts;
+
+    const next = state.offset + state.speed * dt;
+    if (next >= state.maxOffset){
+      setOffset(state.maxOffset); // land exactly with the last line on the guide
+      stop();
+      return;
+    }
+    setOffset(next);
+    state.raf = requestAnimationFrame(tick);
+  }
+
+  function start(withCountdown=true, reRender=false){
+    if (state.running) return;
+    if (reRender) renderScript();
+    applyTypography();
+    applyMirror();
+    // Recompute geometry in case wrapping changed
+    recomputeGuideTop();
+    updateSpacerHeight();
+    requestAnimationFrame(()=>{
+      recomputeLineCenters();
+      recomputeMaxOffset();
+      computeAndDisplayMetrics();
+      const go = ()=>{
+        state.running = true; state.lastTs = 0; setPlayButtons(true);
+        state.raf = requestAnimationFrame(tick);
+      };
+      if (withCountdown && state.countdownOn){ runCountdown(3).then(go); } else { go(); }
+    });
+  }
+
+  function stop(){
+    state.running = false;
+    state.lastTs = 0;
+    if (state.raf){ cancelAnimationFrame(state.raf); state.raf = null; }
+    setPlayButtons(false);
+  }
+
+  function reset(){
+    stop();
+    setOffset(0); // back to start with visible gap under guide
+  }
+
+  /* ---------- UI helpers ---------- */
+  function runCountdown(n){
+    return new Promise(resolve=>{
+      if (n <= 0){ resolve(); return; }
+      els.countdown.classList.add('show');
+      let i = n;
+      const step = ()=>{
+        els.countdown.textContent = i;
+        if (i <= 0){
+          els.countdown.classList.remove('show');
+          resolve();
+        } else {
+          i--;
+          setTimeout(step, 700);
+        }
+      };
+      step();
+    });
+  }
+
+  function snapToGuide(){
+    // Snap offset so the nearest line center aligns with the guide
+    const guideAbs = state.offset + state.guideTopPx; // guide in content coords
+    // Find closest center
+    let best = 0, bestDist = Infinity;
+    for (let i=0;i<state.lineCenters.length;i++){
+      const c = state.lineCenters[i];
+      const d = Math.abs(c - guideAbs);
+      if (d < bestDist){bestDist = d; best = c;}
+    }
+    setOffset(best - state.guideTopPx);
+  }
+
+  function toggleFullscreen(){
+    const el = els.stage;
+    if (!document.fullscreenElement){ el.requestFullscreen?.(); }
+    else { document.exitFullscreen?.(); }
+  }
+
+  /* ---------- Bindings ---------- */
+  function bindPair(range, num, onChange){
+    const sync = (v)=>{ range.value = String(v); num.value = String(v); onChange(v); };
+    range.addEventListener('input', e => sync(e.target.value));
+    num.addEventListener('input', e => sync(e.target.value));
+  }
+
+  bindPair(els.speed, els.speedNum, (v)=>{
+    state.speed = clamp(Number(v)||0, 0, 600);
+    updateSpeedLabel(); computeAndDisplayMetrics(); savePrefs();
+  });
+  bindPair(els.font, els.fontNum, (v)=>{
+    state.fontSize = clamp(Number(v)||24, 12, 200);
+    applyTypography(); savePrefs();
+    recomputeGuideTop(); updateSpacerHeight();
+    requestAnimationFrame(()=>{ recomputeLineCenters(); recomputeMaxOffset(); computeAndDisplayMetrics(); });
+  });
+  bindPair(els.line, els.lineNum, (v)=>{
+    state.lineHeight = clamp(Number(v)||1.0, 0.8, 3.0);
+    applyTypography(); savePrefs();
+    recomputeGuideTop(); updateSpacerHeight();
+    requestAnimationFrame(()=>{ recomputeLineCenters(); recomputeMaxOffset(); computeAndDisplayMetrics(); });
+  });
+  bindPair(els.lead, els.leadNum, (v)=>{
+    state.leadFactor = clamp(Number(v)||0, 0, 2.0);
+    savePrefs();
+    updateSpacerHeight();
+    requestAnimationFrame(()=>{ recomputeLineCenters(); recomputeMaxOffset(); setOffset(0); computeAndDisplayMetrics(); });
+  });
+
+  els.mirror.addEventListener('change', ()=>{
+    state.mirror = !!els.mirror.checked; applyMirror(); savePrefs();
+  });
+  els.countdownToggle.addEventListener('change', ()=>{
+    state.countdownOn = !!els.countdownToggle.checked; savePrefs();
+  });
+  els.guideToggle.addEventListener('change', ()=>{
+    els.guide.classList.toggle('hidden', !els.guideToggle.checked); savePrefs();
+  });
+
+  function togglePlay(fromEditor=false){
+    if (state.running) stop();
+    else start(true, fromEditor);
+  }
+  els.playToggle.addEventListener('click', ()=> togglePlay(false));
+  els.playToggleEditor.addEventListener('click', ()=> togglePlay(true));
+
+  els.reset.addEventListener('click', reset);
+  els.reset2.addEventListener('click', reset);
+  els.fullscreen.addEventListener('click', toggleFullscreen);
+  els.snapToGuide.addEventListener('click', snapToGuide);
+
+  els.exportBtn.addEventListener('click', ()=>{
+    const blob = new Blob([els.editor.value], {type:'text/plain;charset=utf-8'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'teleprompter-script.txt'; a.click(); URL.revokeObjectURL(a.href);
+  });
+  els.importBtn.addEventListener('click', ()=> els.importFile.click());
+  els.importFile.addEventListener('change', async (e)=>{
+    const file = e.target.files?.[0]; if (!file) return;
+    const text = await file.text(); els.editor.value = text;
+    localStorage.setItem(LS_KEY, text);
+    renderScript();
+  });
+  els.clearBtn.addEventListener('click', ()=>{
+    if (confirm('Clear the editor?')) {
+      els.editor.value = ''; localStorage.setItem(LS_KEY, '');
+      renderScript();
+    }
+  });
+
+  window.addEventListener('keydown', (e)=>{
+    const tag = (e.target && e.target.tagName) || '';
+    const typingInInput = /INPUT|TEXTAREA/.test(tag);
+    switch(e.key){
+      case ' ':
+        e.preventDefault(); togglePlay(typingInInput); break;
+      case 'ArrowUp':
+        e.preventDefault(); state.speed = clamp(state.speed + 5, 0, 600); syncInputs(); computeAndDisplayMetrics(); break;
+      case 'ArrowDown':
+        e.preventDefault(); state.speed = clamp(state.speed - 5, 0, 600); syncInputs(); computeAndDisplayMetrics(); break;
+      case 'ArrowLeft':
+        if (typingInInput) return; e.preventDefault();
+        state.fontSize = clamp(state.fontSize - 2, 12, 200); syncInputs(); applyTypography();
+        recomputeGuideTop(); updateSpacerHeight();
+        requestAnimationFrame(()=>{ recomputeLineCenters(); recomputeMaxOffset(); computeAndDisplayMetrics(); });
+        break;
+      case 'ArrowRight':
+        if (typingInInput) return; e.preventDefault();
+        state.fontSize = clamp(state.fontSize + 2, 12, 200); syncInputs(); applyTypography();
+        recomputeGuideTop(); updateSpacerHeight();
+        requestAnimationFrame(()=>{ recomputeLineCenters(); recomputeMaxOffset(); computeAndDisplayMetrics(); });
+        break;
+      case 'm': case 'M':
+        state.mirror = !state.mirror; els.mirror.checked = state.mirror; applyMirror(); savePrefs(); break;
+      case 'f': case 'F':
+        toggleFullscreen(); break;
+      case 'r': case 'R':
+        reset(); break;
+      case 'g': case 'G':
+        els.guideToggle.checked = !els.guideToggle.checked; els.guide.classList.toggle('hidden', !els.guideToggle.checked); savePrefs(); break;
+      case 'c': case 'C':
+        state.countdownOn = !state.countdownOn; els.countdownToggle.checked = state.countdownOn; savePrefs(); break;
+    }
+  }, {passive:false});
+
+  // Recompute on resize (wrapping can change heights)
+  window.addEventListener('resize', ()=>{
+    recomputeGuideTop(); updateSpacerHeight();
+    requestAnimationFrame(()=>{ recomputeLineCenters(); recomputeMaxOffset(); computeAndDisplayMetrics(); });
+  });
+
+  // Autosave + re-render
+  let saveTimer=null;
+  els.editor.addEventListener('input', ()=>{
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(()=>{
+      localStorage.setItem(LS_KEY, els.editor.value);
+      renderScript();
+    }, 200);
+  });
+
+  function savePrefs(){
+    try {
+      localStorage.setItem(LS_PREF, JSON.stringify({
+        speed: state.speed,
+        font: state.fontSize,
+        line: state.lineHeight,
+        mirror: state.mirror,
+        countdownOn: state.countdownOn,
+        guide: !els.guide.classList.contains('hidden'),
+        leadFactor: state.leadFactor,
+      }));
+    } catch(e){}
+  }
+
+  /* ---------- Init ---------- */
+  renderScript();
+  applyTypography();
+  applyMirror();
+  syncInputs();
+  setPlayButtons(false);
+  els.guide.classList.toggle('hidden', !els.guideToggle.checked);
+})();
+</script>
+</body>
+</html>
